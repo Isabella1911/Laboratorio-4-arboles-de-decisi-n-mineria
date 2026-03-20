@@ -1,0 +1,1093 @@
+---
+title: "Laboratorio 4 – Árboles de Decisión"
+author: "Anggelie Velásquez, Anthony Lou, Isabella Obando"
+date: "20 de marzo de 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# 1. Liberias y carga de datos
+
+```{r libraries}
+library(dplyr)
+library(ggplot2)
+library(car)
+library(lmtest)
+library(nortest)
+library(glmnet)
+library(corrplot)
+```
+
+```{r load_data}
+load("../../Data/Lab4/listings.RData")
+df <- listings
+
+cat("Número de filas:   ", nrow(listings), "\n")
+cat("Número de columnas:", ncol(listings), "\n")
+```
+
+---
+
+# 3. Análisis Exploratorio de Datos
+
+## 3.1 Tipos de variables
+
+```{r str_data}
+str(listings)
+```
+
+## 3.2 Resumen general
+
+```{r summary_data}
+summary(listings)
+```
+
+## 3.3 Preparacion de variables numericas
+
+```{r prep_vars}
+listings$price_num <- as.numeric(gsub("[$,]", "", listings$price))
+
+vars <- c("price_num", "bedrooms", "accommodates", "bathrooms",
+          "beds", "review_scores_rating", "reviews_per_month",
+          "availability_365", "minimum_nights")
+df_num <- listings[, vars]
+```
+
+## 3.4 Estadisticas descriptivas
+
+```{r descriptive_stats}
+summary(df_num)
+
+for (v in vars) {
+  cat("\n──", v, "──\n")
+  x <- df_num[[v]][!is.na(df_num[[v]])]
+  cat("  Media:   ", round(mean(x), 2), "\n")
+  cat("  Mediana: ", round(median(x), 2), "\n")
+  cat("  SD:      ", round(sd(x), 2), "\n")
+  cat("  Min/Max: ", round(min(x), 2), "/", round(max(x), 2), "\n")
+  cat("  Q1/Q3:   ", round(quantile(x, 0.25), 2), "/",
+                     round(quantile(x, 0.75), 2), "\n")
+}
+```
+
+## 3.5 Valores faltantes
+
+```{r missing_values}
+na_pct <- sort(sapply(df_num, function(x) round(mean(is.na(x)) * 100, 2)),
+               decreasing = TRUE)
+na_pct <- na_pct[na_pct > 0]
+
+par(mar = c(4, 12, 3, 2))
+barplot(rev(na_pct), horiz = TRUE, las = 1,
+        col = "#E05C5C", border = "white",
+        xlab = "% valores faltantes",
+        main = "Variables con valores faltantes")
+```
+
+## 3.6 Distribucion del precio
+
+```{r price_dist}
+par(mar = c(4, 4, 3, 2))
+precio_filtrado <- df_num$price_num[df_num$price_num < 500 &
+                                    !is.na(df_num$price_num)]
+
+hist(precio_filtrado, breaks = 60,
+     col = "#5B8DB8", border = "white",
+     main = "Distribución de precio por noche (< $500)",
+     xlab = "Precio (USD)", ylab = "Frecuencia")
+abline(v = 193, col = "#E05C5C", lwd = 2, lty = 2)
+legend("topright", legend = "Mediana: $193",
+       col = "#E05C5C", lty = 2, lwd = 2)
+```
+
+## 3.7 Precio por habitaciones y capacidad
+
+```{r boxplot_price}
+df_filt <- df_num[df_num$price_num < 800 & !is.na(df_num$price_num), ]
+
+par(mfrow = c(1, 2), mar = c(5, 4, 4, 1))
+
+boxplot(price_num ~ bedrooms,
+        data = df_filt[!is.na(df_filt$bedrooms), ],
+        col = "#5B8DB8", border = "gray30", outline = FALSE,
+        main = "Precio por habitaciones\nr = 0.4766",
+        xlab = "Nº habitaciones", ylab = "Precio/noche (USD)")
+
+df_filt$acc_grp <- cut(df_filt$accommodates,
+                       breaks = c(0, 2, 4, 6, 8, Inf),
+                       labels = c("1-2", "3-4", "5-6", "7-8", "9+"))
+boxplot(price_num ~ acc_grp,
+        data = df_filt[!is.na(df_filt$acc_grp), ],
+        col = "#6DBF8E", border = "gray30", outline = FALSE,
+        main = "Precio por capacidad\nr = 0.5345",
+        xlab = "Huéspedes", ylab = "Precio/noche (USD)")
+
+par(mfrow = c(1, 1))
+```
+
+## 3.8 Distribucion de ratings
+
+```{r rating_dist}
+par(mar = c(4, 4, 3, 2))
+hist(df_num$review_scores_rating[!is.na(df_num$review_scores_rating)],
+     breaks = 40, col = "#E8A838", border = "white",
+     main = "Distribución de puntuación general",
+     xlab = "Review score rating", ylab = "Frecuencia")
+abline(v = 4.78, col = "#E05C5C", lwd = 2, lty = 2)
+legend("topleft", legend = "Media: 4.78",
+       col = "#E05C5C", lty = 2, lwd = 2)
+```
+
+========================== ISA ==================================
+
+---
+
+# 4. Relaciones entre variables
+
+```{r correlaciones}
+listings$price <- as.numeric(gsub("[$,]", "", listings$price))
+
+set.seed(123)
+sample_listings <- listings %>% sample_n(5000)
+
+sample_listings2 <- sample_listings %>%
+  filter(!is.na(price), !is.na(bedrooms),
+         !is.na(accommodates), !is.na(room_type),
+         price < 1000)
+
+cor_bedrooms     <- cor(sample_listings2$price,
+                        sample_listings2$bedrooms,
+                        use = "complete.obs")
+cor_accommodates <- cor(sample_listings2$price,
+                        sample_listings2$accommodates,
+                        use = "complete.obs")
+
+cat("Correlación price vs bedrooms:    ", round(cor_bedrooms, 4), "\n")
+cat("Correlación price vs accommodates:", round(cor_accommodates, 4), "\n")
+```
+
+## 4.1 Scatter plots
+
+```{r scatter_plots}
+ggplot(sample_listings2, aes(x = bedrooms, y = price)) +
+  geom_jitter(alpha = 0.3, color = "#5B8DB8") +
+  labs(title = "Relación entre número de habitaciones y precio",
+       x = "bedrooms", y = "price")
+
+ggplot(sample_listings2, aes(x = accommodates, y = price)) +
+  geom_jitter(alpha = 0.3, color = "#6DBF8E") +
+  labs(title = "Relación entre capacidad y precio",
+       x = "accommodates", y = "price")
+```
+
+## 4.2 Precio por tipo de habitacion
+
+```{r boxplot_roomtype}
+ggplot(sample_listings2, aes(x = room_type, y = price)) +
+  geom_boxplot(fill = "#5B8DB8", color = "gray30", outlier.alpha = 0.2) +
+  labs(title = "Precio según tipo de habitación",
+       x = "room_type", y = "price")
+```
+
+---
+
+# 5. Preprocesamiento de datos
+
+```{r preprocesamiento}
+model_df <- listings %>%
+  mutate(
+    price                    = as.numeric(gsub("[$,]", "", price)),
+    is_superhost             = ifelse(host_is_superhost == "t", 1, 0),
+    is_instant_book          = ifelse(instant_bookable == "t", 1, 0),
+    host_response_rate_num   = as.numeric(gsub("%", "", host_response_rate)),
+    host_acceptance_rate_num = as.numeric(gsub("%", "", host_acceptance_rate)),
+    room_type                = as.factor(room_type)
+  ) %>%
+  select(price, bedrooms, accommodates, bathrooms, beds,
+         review_scores_rating, reviews_per_month,
+         availability_365, minimum_nights,
+         is_superhost, is_instant_book,
+         host_response_rate_num, host_acceptance_rate_num,
+         room_type) %>%
+  filter(!is.na(price), price > 0, price < 1000,
+         !is.na(bedrooms), !is.na(bathrooms), !is.na(beds)) %>%
+  mutate(across(where(is.numeric),
+                ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+cat("Dimensiones del dataset limpio:",
+    nrow(model_df), "filas x", ncol(model_df), "columnas\n")
+```
+
+---
+
+# 6. Ingeniería de características
+
+```{r feature_engineering}
+model_df <- model_df %>%
+  mutate(
+    price_per_guest  = price / accommodates,
+    beds_per_bedroom = ifelse(bedrooms > 0, beds / bedrooms, beds),
+    size_category    = case_when(
+      accommodates <= 2 ~ "small",
+      accommodates <= 5 ~ "medium",
+      accommodates <= 8 ~ "large",
+      TRUE              ~ "extra_large"
+    ) %>% as.factor(),
+    high_rated        = ifelse(!is.na(review_scores_rating) &
+                               review_scores_rating >= 4.8, 1, 0),
+    high_availability = ifelse(availability_365 > 182, 1, 0)
+  )
+
+cat("Features finales:", ncol(model_df), "\n")
+```
+---
+
+# 7. División Train / Test
+
+```{r train_test_split}
+set.seed(42)
+
+n         <- nrow(model_df)
+train_idx <- sample(seq_len(n), size = floor(0.70 * n))
+
+train_df <- model_df[ train_idx, ]
+test_df  <- model_df[-train_idx, ]
+
+cat("Total: ", n, "\n")
+cat("Train: ", nrow(train_df), "filas (",
+    round(nrow(train_df)/n*100), "%)\n")
+cat("Test:  ", nrow(test_df),  "filas (",
+    round(nrow(test_df)/n*100),  "%)\n")
+
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+hist(train_df$price, breaks = 40, col = "#5B8DB8", border = "white",
+     main = "Price — Train", xlab = "Precio (USD)")
+abline(v = median(train_df$price), col = "#E05C5C", lwd = 2, lty = 2)
+
+hist(test_df$price, breaks = 40, col = "#6DBF8E", border = "white",
+     main = "Price — Test", xlab = "Precio (USD)")
+abline(v = median(test_df$price), col = "#E05C5C", lwd = 2, lty = 2)
+par(mfrow = c(1, 1))
+
+cat("\nMediana price Train:", median(train_df$price))
+cat("\nMediana price Test: ", median(test_df$price))
+```
+
+---
+
+# 8. Modelo de Regresion Lineal Simple
+
+```{r modelo_simple}
+modelo_simple <- lm(price ~ accommodates, data = train_df)
+summary(modelo_simple)
+
+cat("\nIntercepto:   ", round(coef(modelo_simple)[1], 2))
+cat("\naccommodates: ", round(coef(modelo_simple)[2], 2))
+cat("\nR²:           ", round(summary(modelo_simple)$r.squared, 4))
+cat("\nRMSE train:   ", round(sqrt(mean(modelo_simple$residuals^2)), 2))
+```
+
+
+```{r simple_plots}
+par(mar = c(4, 4, 3, 2))
+plot(train_df$accommodates, train_df$price,
+     pch = 16, col = rgb(0.36, 0.54, 0.72, 0.3),
+     main = "Regresión Lineal Simple: price ~ accommodates",
+     xlab = "Capacidad (accommodates)",
+     ylab = "Precio por noche (USD)")
+abline(modelo_simple, col = "#E05C5C", lwd = 2)
+legend("topleft",
+       legend = paste0("R² = ",
+                       round(summary(modelo_simple)$r.squared, 4)),
+       col = "#E05C5C", lty = 1, lwd = 2, bty = "n")
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(modelo_simple, col = rgb(0.36, 0.54, 0.72, 0.4),
+     pch = 16, cex = 0.5)
+par(mfrow = c(1, 1))
+```
+
+```{r simple_test}
+pred_simple <- predict(modelo_simple, newdata = test_df)
+
+rmse_simple <- sqrt(mean((test_df$price - pred_simple)^2))
+mae_simple  <- mean(abs(test_df$price - pred_simple))
+r2_test     <- cor(test_df$price, pred_simple)^2
+
+cat("RMSE:", round(rmse_simple, 2))
+cat("\nMAE: ", round(mae_simple,  2))
+cat("\nR²:  ", round(r2_test,    4))
+
+par(mar = c(4, 4, 3, 2))
+plot(test_df$price, pred_simple,
+     pch = 16, col = rgb(0.43, 0.75, 0.56, 0.3),
+     main = "Predicho vs Real — Modelo Simple",
+     xlab = "Precio real (USD)", ylab = "Precio predicho (USD)")
+abline(0, 1, col = "#E05C5C", lwd = 2, lty = 2)
+```
+
+---
+
+# 9. Modelo de Regresión Lineal Múltiple
+
+```{r modelo_multiple}
+modelo_multiple <- lm(price ~ bedrooms + accommodates + bathrooms +
+                        beds + review_scores_rating + reviews_per_month +
+                        availability_365 + minimum_nights +
+                        is_superhost + is_instant_book +
+                        host_response_rate_num + host_acceptance_rate_num +
+                        room_type + price_per_guest + beds_per_bedroom +
+                        high_rated + high_availability,
+                      data = train_df)
+
+summary(modelo_multiple)
+
+r2_mult      <- summary(modelo_multiple)$r.squared
+r2_adj_mult  <- summary(modelo_multiple)$adj.r.squared
+rmse_train_m <- sqrt(mean(modelo_multiple$residuals^2))
+
+cat("\nR²:        ", round(r2_mult,      4))
+cat("\nR² adj:    ", round(r2_adj_mult,  4))
+cat("\nRMSE train:", round(rmse_train_m, 2))
+```
+
+```{r multiple_corrplot}
+vars_numericas <- train_df %>%
+  select(bedrooms, accommodates, bathrooms, beds,
+         review_scores_rating, reviews_per_month,
+         availability_365, minimum_nights,
+         is_superhost, is_instant_book,
+         host_response_rate_num, host_acceptance_rate_num,
+         beds_per_bedroom, high_rated, high_availability)
+
+matriz_cor <- cor(vars_numericas, use = "complete.obs")
+
+corrplot(matriz_cor, method = "color", type = "upper",
+         tl.cex = 0.7, addCoef.col = "black",
+         number.cex = 0.5,
+         title = "Correlación entre predictores",
+         mar = c(0, 0, 2, 0))
+```
+
+```{r multiple_test}
+pred_multiple <- predict(modelo_multiple, newdata = test_df)
+
+rmse_mult  <- sqrt(mean((test_df$price - pred_multiple)^2))
+mae_mult   <- mean(abs(test_df$price - pred_multiple))
+r2_test_m  <- cor(test_df$price, pred_multiple)^2
+
+cat("RMSE:", round(rmse_mult,  2))
+cat("\nMAE: ", round(mae_mult,   2))
+cat("\nR²:  ", round(r2_test_m, 4))
+```
+
+---
+
+# 10. Diagnostico y Multicolinealidad
+
+```{r diagnostico_vif}
+library(car)
+library(lmtest)
+library(nortest)
+
+vif_vals <- vif(modelo_multiple)
+
+cat("\n── VIF por variable ──\n")
+print(round(vif_vals, 2))
+
+cat("\n── Variables con VIF > 5 ──\n")
+print(vif_vals[vif_vals > 5])
+
+par(mar = c(4, 14, 3, 2))
+barplot(sort(vif_vals, decreasing = FALSE),
+        horiz = TRUE, las = 1,
+        col = ifelse(sort(vif_vals, decreasing=FALSE) > 10, "#E05C5C",
+              ifelse(sort(vif_vals, decreasing=FALSE) > 5,  "#E8A838",
+                     "#5B8DB8")),
+        border = "white",
+        xlab = "VIF",
+        main = "Factor de Inflación de Varianza (VIF)")
+abline(v = 5,  col = "#E8A838", lwd = 2, lty = 2)
+abline(v = 10, col = "#E05C5C", lwd = 2, lty = 2)
+legend("bottomright",
+       legend = c("VIF < 5", "VIF 5-10", "VIF > 10"),
+       fill = c("#5B8DB8", "#E8A838", "#E05C5C"), bty = "n")
+```
+
+```{r diagnostico_residuos}
+residuos <- residuals(modelo_multiple)
+
+par(mar = c(4, 4, 3, 2))
+hist(residuos, breaks = 60, col = "#5B8DB8", border = "white",
+     main = "Distribución de residuos — Modelo Múltiple",
+     xlab = "Residuos", ylab = "Frecuencia")
+abline(v = 0, col = "#E05C5C", lwd = 2, lty = 2)
+
+qqnorm(residuos, pch = 16, col = rgb(0.36, 0.54, 0.72, 0.3),
+       main = "Q-Q Plot de residuos")
+qqline(residuos, col = "#E05C5C", lwd = 2)
+
+set.seed(42)
+ad_test <- ad.test(sample(residuos, 5000))
+print(ad_test)
+
+bp_test <- bptest(modelo_multiple)
+print(bp_test)
+
+par(mar = c(4, 4, 3, 2))
+plot(fitted(modelo_multiple), residuos,
+     pch = 16, col = rgb(0.36, 0.54, 0.72, 0.3),
+     main = "Residuos vs Valores Ajustados",
+     xlab = "Valores ajustados", ylab = "Residuos")
+abline(h = 0, col = "#E05C5C", lwd = 2, lty = 2)
+lines(lowess(fitted(modelo_multiple), residuos),
+      col = "#E8A838", lwd = 2)
+```
+
+## 10.1 Modelo reducido (sin multicolinealidad)
+
+```{r modelo_reducido}
+modelo_reducido <- lm(price ~ accommodates + bedrooms + bathrooms +
+                        review_scores_rating + reviews_per_month +
+                        availability_365 + minimum_nights +
+                        is_superhost + is_instant_book +
+                        host_response_rate_num +
+                        room_type + high_rated + high_availability,
+                      data = train_df)
+
+summary(modelo_reducido)
+
+vif_reducido <- vif(modelo_reducido)
+cat("\n── VIF modelo reducido ──\n")
+print(round(vif_reducido, 2))
+
+cat("\nR² adj completo: ", round(summary(modelo_multiple)$adj.r.squared, 4))
+cat("\nR² adj reducido: ", round(summary(modelo_reducido)$adj.r.squared, 4))
+
+pred_reducido <- predict(modelo_reducido, newdata = test_df)
+rmse_red <- sqrt(mean((test_df$price - pred_reducido)^2))
+mae_red  <- mean(abs(test_df$price - pred_reducido))
+r2_red   <- cor(test_df$price, pred_reducido)^2
+
+cat("\n\nMétricas Test — Modelo Reducido")
+cat("\nRMSE:", round(rmse_red, 2))
+cat("\nMAE: ", round(mae_red,  2))
+cat("\nR²:  ", round(r2_red,  4))
+```
+
+---
+
+# 11. Regularización — Ridge y Lasso
+
+```{r regularizacion_setup}
+vars_modelo <- c("accommodates", "bedrooms", "bathrooms",
+                 "review_scores_rating", "reviews_per_month",
+                 "availability_365", "minimum_nights",
+                 "is_superhost", "is_instant_book",
+                 "host_response_rate_num",
+                 "high_rated", "high_availability",
+                 "beds_per_bedroom", "room_type")
+
+X_train <- model.matrix(~ . - 1, data = train_df[, vars_modelo])
+X_test  <- model.matrix(~ . - 1, data = test_df[,  vars_modelo])
+y_train <- train_df$price
+y_test  <- test_df$price
+```
+
+## 11.1 Ridge (α = 0)
+
+```{r ridge}
+set.seed(42)
+cv_ridge     <- cv.glmnet(X_train, y_train, alpha = 0, nfolds = 10)
+lambda_ridge <- cv_ridge$lambda.min
+cat("Lambda óptimo Ridge:", round(lambda_ridge, 4))
+
+plot(cv_ridge, main = "Ridge — CV para lambda")
+
+modelo_ridge <- glmnet(X_train, y_train, alpha = 0, lambda = lambda_ridge)
+
+modelo_ridge_path <- glmnet(X_train, y_train, alpha = 0)
+plot(modelo_ridge_path, xvar = "lambda", label = TRUE,
+     main = "Ridge — Trayectoria de coeficientes")
+abline(v = log(lambda_ridge), col = "#E05C5C", lwd = 2, lty = 2)
+
+pred_ridge <- predict(modelo_ridge, newx = X_test, s = lambda_ridge)
+rmse_ridge <- sqrt(mean((y_test - pred_ridge)^2))
+mae_ridge  <- mean(abs(y_test - pred_ridge))
+r2_ridge   <- cor(y_test, as.vector(pred_ridge))^2
+
+cat("\nRMSE Ridge:", round(rmse_ridge, 2))
+cat("\nMAE Ridge: ", round(mae_ridge,  2))
+cat("\nR² Ridge:  ", round(r2_ridge,   4))
+```
+
+## 11.2 Lasso (α = 1)
+
+```{r lasso}
+set.seed(42)
+cv_lasso     <- cv.glmnet(X_train, y_train, alpha = 1, nfolds = 10)
+lambda_lasso <- cv_lasso$lambda.min
+cat("Lambda óptimo Lasso:", round(lambda_lasso, 4))
+
+plot(cv_lasso, main = "Lasso — CV para lambda")
+
+modelo_lasso <- glmnet(X_train, y_train, alpha = 1, lambda = lambda_lasso)
+
+coef_lasso         <- coef(modelo_lasso)
+vars_seleccionadas <- coef_lasso[coef_lasso[, 1] != 0, ]
+cat("\n── Variables seleccionadas por Lasso ──\n")
+print(round(vars_seleccionadas, 4))
+cat("\nVariables eliminadas:", sum(coef_lasso[-1] == 0),
+    "de", nrow(coef_lasso) - 1)
+
+modelo_lasso_path <- glmnet(X_train, y_train, alpha = 1)
+plot(modelo_lasso_path, xvar = "lambda", label = TRUE,
+     main = "Lasso — Trayectoria de coeficientes")
+abline(v = log(lambda_lasso), col = "#E05C5C", lwd = 2, lty = 2)
+
+pred_lasso <- predict(modelo_lasso, newx = X_test, s = lambda_lasso)
+rmse_lasso <- sqrt(mean((y_test - pred_lasso)^2))
+mae_lasso  <- mean(abs(y_test - pred_lasso))
+r2_lasso   <- cor(y_test, as.vector(pred_lasso))^2
+
+cat("\nRMSE Lasso:", round(rmse_lasso, 2))
+cat("\nMAE Lasso: ", round(mae_lasso,  2))
+cat("\nR² Lasso:  ", round(r2_lasso,   4))
+```
+
+---
+
+# 12. Evaluacion y Comparacion de Modelos
+
+```{r comparacion}
+resultados <- data.frame(
+  Modelo = c("Simple", "Múltiple completo",
+             "Múltiple reducido", "Ridge", "Lasso"),
+  RMSE = round(c(rmse_simple, rmse_mult, rmse_red,
+                 rmse_ridge,  rmse_lasso), 2),
+  MAE  = round(c(mae_simple,  mae_mult,  mae_red,
+                 mae_ridge,   mae_lasso), 2),
+  R2   = round(c(r2_test,     r2_test_m, r2_red,
+                 r2_ridge,    r2_lasso),  4)
+)
+
+cat("\n══ TABLA COMPARATIVA DE MODELOS ══\n")
+print(resultados)
+
+colores <- c("#A8C8E8", "#5B8DB8", "#2E6DA4", "#E8A838", "#6DBF8E")
+
+par(mar = c(6, 5, 4, 2))
+bp <- barplot(resultados$RMSE,
+              names.arg = resultados$Modelo,
+              col = colores, border = "white",
+              ylim = c(0, max(resultados$RMSE) * 1.2),
+              main = "Comparación de RMSE en conjunto de prueba",
+              ylab = "RMSE (USD)", las = 2, cex.names = 0.75)
+text(bp, resultados$RMSE + 1,
+     labels = resultados$RMSE, cex = 0.85, font = 2)
+
+par(mar = c(6, 5, 4, 2))
+bp2 <- barplot(resultados$R2,
+               names.arg = resultados$Modelo,
+               col = colores, border = "white",
+               ylim = c(0, 1),
+               main = "Comparación de R² en conjunto de prueba",
+               ylab = "R²", las = 2, cex.names = 0.75)
+text(bp2, resultados$R2 + 0.02,
+     labels = resultados$R2, cex = 0.85, font = 2)
+abline(h = 0.5, col = "#E05C5C", lwd = 2, lty = 2)
+```
+
+```{r predicho_vs_real}
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+modelos_pred <- list(
+  list(pred = pred_simple,           nombre = "Simple"),
+  list(pred = pred_multiple,         nombre = "Múltiple completo"),
+  list(pred = pred_reducido,         nombre = "Múltiple reducido"),
+  list(pred = as.vector(pred_ridge), nombre = "Ridge"),
+  list(pred = as.vector(pred_lasso), nombre = "Lasso")
+)
+
+for (m in modelos_pred) {
+  plot(y_test, m$pred,
+       pch = 16, col = rgb(0.36, 0.54, 0.72, 0.2),
+       main = m$nombre,
+       xlab = "Real", ylab = "Predicho",
+       xlim = c(0, 800), ylim = c(0, 800))
+  abline(0, 1, col = "#E05C5C", lwd = 2, lty = 2)
+}
+par(mfrow = c(1, 1))
+```
+
+```{r distribucion_errores}
+errores <- data.frame(
+  Simple   = y_test - pred_simple,
+  Multiple = y_test - pred_multiple,
+  Reducido = y_test - pred_reducido,
+  Ridge    = y_test - as.vector(pred_ridge),
+  Lasso    = y_test - as.vector(pred_lasso)
+)
+
+par(mar = c(5, 4, 3, 2))
+boxplot(errores,
+        col = colores, border = "gray30", outline = FALSE,
+        main = "Distribución de errores por modelo",
+        ylab = "Error (Real - Predicho)", las = 2)
+abline(h = 0, col = "#E05C5C", lwd = 2, lty = 2)
+```
+
+```{r mejor_modelo}
+mejor_rmse <- resultados$Modelo[which.min(resultados$RMSE)]
+mejor_r2   <- resultados$Modelo[which.max(resultados$R2)]
+
+cat("Mejor modelo por RMSE:", mejor_rmse)
+cat("\nMejor modelo por R²:  ", mejor_r2)
+cat("\n\nMétricas del mejor modelo:\n")
+print(resultados[which.min(resultados$RMSE), ])
+```
+
+# 1. Librerías
+
+```{r libraries}
+library(rpart)
+library(rpart.plot)
+library(dplyr)
+```
+
+---
+
+# 2. Punto 1 — Mismos conjuntos de entrenamiento y prueba
+
+Se reutilizan `train_df` y `test_df` generados en el Lab 3 con `set.seed(42)` y división 70/30.
+
+```{r verificacion_conjuntos}
+cat("Filas train: ", nrow(train_df), "\n")
+cat("Filas test:  ", nrow(test_df),  "\n")
+cat("Mediana price train:", median(train_df$price), "\n")
+cat("Mediana price test: ", median(test_df$price),  "\n")
+```
+
+---
+
+# 3. Punto 2 — Árbol de regresión con todas las variables
+
+Se excluye `price_per_guest` para evitar *data leakage*, ya que es una variable derivada directamente del precio.
+
+```{r vars_arbol}
+vars_arbol <- c("accommodates", "bedrooms", "bathrooms",
+                "review_scores_rating", "reviews_per_month",
+                "availability_365", "minimum_nights",
+                "is_superhost", "is_instant_book",
+                "host_response_rate_num",
+                "high_rated", "high_availability",
+                "beds_per_bedroom", "room_type")
+```
+
+```{r arbol_base}
+set.seed(42)
+arbol_base <- rpart(price ~ .,
+                    data    = train_df[, c("price", vars_arbol)],
+                    method  = "anova",
+                    control = rpart.control(cp = 0.001))
+
+printcp(arbol_base)
+```
+
+```{r plot_arbol_base, fig.width=14, fig.height=7}
+rpart.plot(arbol_base,
+           type  = 4,
+           extra = 101,
+           under = TRUE,
+           cex   = 0.55,
+           main  = "Árbol de Regresión Base (sin restricción de profundidad)")
+```
+
+---
+
+# 4. Punto 3 — Predicción y análisis del árbol base
+
+```{r metricas_arbol_base}
+pred_arbol_base <- predict(arbol_base, newdata = test_df)
+
+rmse_arbol_base <- sqrt(mean((test_df$price - pred_arbol_base)^2))
+mae_arbol_base  <- mean(abs(test_df$price - pred_arbol_base))
+r2_arbol_base   <- cor(test_df$price, pred_arbol_base)^2
+
+cat("RMSE: ", round(rmse_arbol_base, 2), "\n")
+cat("MAE:  ", round(mae_arbol_base,  2), "\n")
+cat("R²:   ", round(r2_arbol_base,   4), "\n")
+```
+
+```{r plot_predicho_real_base, fig.width=6, fig.height=5}
+plot(test_df$price, pred_arbol_base,
+     pch  = 16,
+     col  = rgb(0.36, 0.54, 0.72, 0.2),
+     main = "Predicho vs Real — Árbol Base",
+     xlab = "Precio real (USD)",
+     ylab = "Precio predicho (USD)",
+     xlim = c(0, 800),
+     ylim = c(0, 800))
+abline(0, 1, col = "#E05C5C", lwd = 2, lty = 2)
+legend("topleft",
+       legend = paste0("R² = ", round(r2_arbol_base, 4)),
+       col = "#E05C5C", lty = 2, lwd = 2, bty = "n")
+```
+
+```{r errores_base, fig.width=7, fig.height=4}
+errores_base <- test_df$price - pred_arbol_base
+
+hist(errores_base, breaks = 60,
+     col    = "#5B8DB8", border = "white",
+     main   = "Distribución de errores — Árbol Base",
+     xlab   = "Error (Real - Predicho)",
+     ylab   = "Frecuencia")
+abline(v = 0,                  col = "#E05C5C", lwd = 2, lty = 2)
+abline(v = mean(errores_base), col = "#E8A838", lwd = 2, lty = 1)
+legend("topright",
+       legend = c("Error = 0",
+                  paste0("Media = ", round(mean(errores_base), 2))),
+       col = c("#E05C5C", "#E8A838"),
+       lty = c(2, 1), lwd = 2, bty = "n")
+```
+
+```{r analisis_errores_base}
+cat("Error medio:            ", round(mean(errores_base), 2), "\n")
+cat("Desv. estándar errores: ", round(sd(errores_base),   2), "\n")
+cat("Error mediano:          ", round(median(errores_base), 2), "\n")
+cat("% predicciones ± $50:  ",
+    round(mean(abs(errores_base) <= 50) * 100, 1), "%\n")
+```
+
+---
+
+# 5. Punto 4 — Modelos con distintas profundidades
+
+Se comparan 4 profundidades distintas: `maxdepth` = 3, 5, 7 y 10.
+
+```{r modelos_profundidad}
+profundidades   <- c(3, 5, 7, 10)
+resultados_prof <- data.frame(Profundidad = character(),
+                               RMSE = numeric(), MAE = numeric(),
+                               R2   = numeric(), Nodos = numeric(),
+                               stringsAsFactors = FALSE)
+modelos_prof <- list()
+
+for (d in profundidades) {
+  set.seed(42)
+  modelo_d <- rpart(price ~ .,
+                    data    = train_df[, c("price", vars_arbol)],
+                    method  = "anova",
+                    control = rpart.control(maxdepth = d, cp = 0.001))
+
+  pred_d  <- predict(modelo_d, newdata = test_df)
+  rmse_d  <- sqrt(mean((test_df$price - pred_d)^2))
+  mae_d   <- mean(abs(test_df$price - pred_d))
+  r2_d    <- cor(test_df$price, pred_d)^2
+
+  resultados_prof <- rbind(resultados_prof,
+    data.frame(Profundidad = paste0("maxdepth = ", d),
+               RMSE  = round(rmse_d,  2),
+               MAE   = round(mae_d,   2),
+               R2    = round(r2_d,    4),
+               Nodos = nrow(modelo_d$frame)))
+
+  modelos_prof[[paste0("d", d)]] <- list(modelo = modelo_d, pred = pred_d)
+}
+
+# Incluir árbol base
+resultados_prof <- rbind(
+  data.frame(Profundidad = "Sin límite (base)",
+             RMSE  = round(rmse_arbol_base, 2),
+             MAE   = round(mae_arbol_base,  2),
+             R2    = round(r2_arbol_base,   4),
+             Nodos = nrow(arbol_base$frame)),
+  resultados_prof
+)
+
+print(resultados_prof)
+```
+
+```{r plot_rmse_profundidad, fig.width=8, fig.height=5}
+colores_prof <- c("#A8C8E8", "#5B8DB8", "#2E6DA4", "#1A4F8A", "#E8A838")
+
+par(mar = c(6, 5, 4, 2))
+bp_prof <- barplot(resultados_prof$RMSE,
+                   names.arg = resultados_prof$Profundidad,
+                   col = colores_prof, border = "white",
+                   ylim = c(0, max(resultados_prof$RMSE) * 1.2),
+                   main = "RMSE por profundidad del árbol (test)",
+                   ylab = "RMSE (USD)", las = 2, cex.names = 0.75)
+text(bp_prof, resultados_prof$RMSE + 1,
+     labels = resultados_prof$RMSE, cex = 0.85, font = 2)
+```
+
+```{r plot_r2_profundidad, fig.width=8, fig.height=5}
+par(mar = c(6, 5, 4, 2))
+bp_r2 <- barplot(resultados_prof$R2,
+                 names.arg = resultados_prof$Profundidad,
+                 col = colores_prof, border = "white",
+                 ylim = c(0, 1),
+                 main = "R² por profundidad del árbol (test)",
+                 ylab = "R²", las = 2, cex.names = 0.75)
+text(bp_r2, resultados_prof$R2 + 0.02,
+     labels = resultados_prof$R2, cex = 0.85, font = 2)
+abline(h = 0.5, col = "#E05C5C", lwd = 2, lty = 2)
+```
+
+```{r plot_arboles_profundidad, fig.width=14, fig.height=10}
+par(mfrow = c(2, 2), mar = c(1, 1, 2, 1))
+for (d in profundidades) {
+  rpart.plot(modelos_prof[[paste0("d", d)]]$modelo,
+             type = 4, extra = 101, under = TRUE, cex = 0.55,
+             main = paste0("Árbol — maxdepth = ", d))
+}
+par(mfrow = c(1, 1))
+```
+
+```{r mejor_arbol_regresion}
+mejor_idx  <- which.min(resultados_prof$RMSE)
+mejor_prof <- resultados_prof$Profundidad[mejor_idx]
+cat("Mejor árbol de regresión:", mejor_prof, "\n")
+print(resultados_prof[mejor_idx, ])
+```
+
+---
+
+# 6. Punto 5 — Comparación con modelos de regresión lineal (Lab 3)
+
+```{r comparacion_final}
+rmse_mejor_arbol <- resultados_prof$RMSE[mejor_idx]
+mae_mejor_arbol  <- resultados_prof$MAE[mejor_idx]
+r2_mejor_arbol   <- resultados_prof$R2[mejor_idx]
+
+comparacion_final <- data.frame(
+  Modelo = c("Reg. Lineal Simple",
+             "Reg. Múltiple completo",
+             "Reg. Múltiple reducido",
+             "Ridge",
+             "Lasso",
+             paste0("Árbol Regresión (", mejor_prof, ")")),
+  RMSE = round(c(rmse_simple, rmse_mult, rmse_red,
+                 rmse_ridge, rmse_lasso, rmse_mejor_arbol), 2),
+  MAE  = round(c(mae_simple, mae_mult, mae_red,
+                 mae_ridge, mae_lasso, mae_mejor_arbol), 2),
+  R2   = round(c(r2_test, r2_test_m, r2_red,
+                 r2_ridge, r2_lasso, r2_mejor_arbol), 4)
+)
+
+print(comparacion_final)
+```
+
+```{r plot_comparacion_final, fig.width=10, fig.height=5}
+colores_comp <- c("#A8C8E8", "#5B8DB8", "#2E6DA4",
+                  "#E8A838", "#6DBF8E", "#E05C5C")
+
+par(mar = c(9, 5, 4, 2))
+bp_comp <- barplot(comparacion_final$RMSE,
+                   names.arg = comparacion_final$Modelo,
+                   col = colores_comp, border = "white",
+                   ylim = c(0, max(comparacion_final$RMSE) * 1.25),
+                   main = "RMSE — Todos los modelos (test)",
+                   ylab = "RMSE (USD)", las = 2, cex.names = 0.65)
+text(bp_comp, comparacion_final$RMSE + 1,
+     labels = comparacion_final$RMSE, cex = 0.8, font = 2)
+```
+
+```{r conclusion_comparacion}
+mejor_global <- comparacion_final$Modelo[which.min(comparacion_final$RMSE)]
+cat("Modelo con menor RMSE en test:", mejor_global, "\n")
+```
+
+---
+
+# 7. Punto 6 — Variable respuesta categórica: Económica / Intermedia / Cara
+
+## 7.1 Fundamento en la distribución de precios
+
+```{r distribucion_precios}
+cat("Percentil 25 (Q1): $", quantile(model_df$price, 0.25), "\n")
+cat("Percentil 50 (Q2): $", quantile(model_df$price, 0.50), "\n")
+cat("Percentil 75 (Q3): $", quantile(model_df$price, 0.75), "\n")
+cat("Media:             $", round(mean(model_df$price), 2),  "\n")
+cat("Desv. estándar:    $", round(sd(model_df$price),   2),  "\n")
+```
+
+Los cortes se basan en los cuartiles Q1 y Q3 de la distribución real de precios:
+
+- **Económica**: precio ≤ Q1 → el 25 % más barato del mercado.  
+- **Intermedia**: Q1 < precio ≤ Q3 → rango intercuartílico, el 50 % central.  
+- **Cara**: precio > Q3 → el 25 % más caro.  
+
+Este criterio es robusto ante valores extremos porque no depende de la media ni de la desviación estándar.
+
+```{r plot_cortes, fig.width=8, fig.height=4}
+corte_bajo <- as.numeric(quantile(model_df$price, 0.25))
+corte_alto <- as.numeric(quantile(model_df$price, 0.75))
+
+hist(model_df$price, breaks = 80,
+     col = "#5B8DB8", border = "white",
+     main = "Distribución de precios con límites de clasificación",
+     xlab = "Precio por noche (USD)", ylab = "Frecuencia")
+abline(v = corte_bajo, col = "#6DBF8E", lwd = 2, lty = 2)
+abline(v = corte_alto, col = "#E05C5C", lwd = 2, lty = 2)
+legend("topright",
+       legend = c(paste0("Q1 = $", corte_bajo, "  (Económica | Intermedia)"),
+                  paste0("Q3 = $", corte_alto, "  (Intermedia | Cara)")),
+       col = c("#6DBF8E", "#E05C5C"),
+       lty = 2, lwd = 2, bty = "n")
+```
+
+## 7.2 Creación de la variable y distribución
+
+```{r crear_categoria}
+clasificar_precio <- function(precio, q1, q3) {
+  dplyr::case_when(
+    precio <= q1 ~ "Economica",
+    precio <= q3 ~ "Intermedia",
+    TRUE         ~ "Cara"
+  )
+}
+
+model_df$categoria_precio <- factor(
+  clasificar_precio(model_df$price, corte_bajo, corte_alto),
+  levels = c("Economica", "Intermedia", "Cara"))
+
+train_df$categoria_precio <- factor(
+  clasificar_precio(train_df$price, corte_bajo, corte_alto),
+  levels = c("Economica", "Intermedia", "Cara"))
+
+test_df$categoria_precio <- factor(
+  clasificar_precio(test_df$price, corte_bajo, corte_alto),
+  levels = c("Economica", "Intermedia", "Cara"))
+
+cat("── Distribución de categorías (dataset completo) ──\n")
+print(table(model_df$categoria_precio))
+cat("\n── Porcentaje ──\n")
+print(round(prop.table(table(model_df$categoria_precio)) * 100, 1))
+```
+
+```{r plot_boxplot_categorias, fig.width=7, fig.height=5}
+boxplot(price ~ categoria_precio,
+        data    = model_df,
+        col     = c("#6DBF8E", "#5B8DB8", "#E05C5C"),
+        border  = "gray30",
+        outline = FALSE,
+        main    = "Precio por categoría definida",
+        xlab    = "Categoría",
+        ylab    = "Precio por noche (USD)")
+abline(h = corte_bajo, col = "#6DBF8E", lwd = 2, lty = 2)
+abline(h = corte_alto, col = "#E05C5C", lwd = 2, lty = 2)
+```
+
+---
+
+# 8. Punto 7 — Árbol de clasificación
+
+El precio **no se incluye** como predictor, ya que la variable respuesta se derivó directamente de él.
+
+```{r vars_clasif}
+vars_clasif <- c("accommodates", "bedrooms", "bathrooms",
+                 "review_scores_rating", "reviews_per_month",
+                 "availability_365", "minimum_nights",
+                 "is_superhost", "is_instant_book",
+                 "host_response_rate_num",
+                 "high_rated", "high_availability",
+                 "beds_per_bedroom", "room_type")
+```
+
+```{r arbol_clasificacion}
+set.seed(42)
+arbol_clasif <- rpart(categoria_precio ~ .,
+                      data    = train_df[, c("categoria_precio", vars_clasif)],
+                      method  = "class",
+                      control = rpart.control(cp = 0.001, maxdepth = 6))
+
+printcp(arbol_clasif)
+```
+
+```{r plot_arbol_clasificacion, fig.width=14, fig.height=8}
+rpart.plot(arbol_clasif,
+           type        = 4,
+           extra       = 104,
+           under       = TRUE,
+           cex         = 0.6,
+           box.palette = list("Economica"  = "#6DBF8E",
+                              "Intermedia" = "#5B8DB8",
+                              "Cara"       = "#E05C5C"),
+           main = "Árbol de Clasificación — Categoría de precio")
+```
+
+## 8.1 Evaluación del modelo
+
+```{r evaluacion_clasificacion}
+pred_clasif <- predict(arbol_clasif, newdata = test_df, type = "class")
+
+conf_mat <- table(Real = test_df$categoria_precio, Predicho = pred_clasif)
+cat("── Matriz de confusión ──\n")
+print(conf_mat)
+
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+cat("\nAccuracy global:", round(accuracy * 100, 2), "%\n")
+```
+
+```{r metricas_por_clase}
+cat("\n── Métricas por clase ──\n")
+for (clase in levels(test_df$categoria_precio)) {
+  tp <- conf_mat[clase, clase]
+  fp <- sum(conf_mat[, clase]) - tp
+  fn <- sum(conf_mat[clase, ]) - tp
+
+  precision <- if ((tp + fp) > 0) tp / (tp + fp) else 0
+  recall    <- if ((tp + fn) > 0) tp / (tp + fn) else 0
+  f1        <- if ((precision + recall) > 0)
+                 2 * precision * recall / (precision + recall) else 0
+
+  cat(sprintf("  %s — Precision: %.3f | Recall: %.3f | F1: %.3f\n",
+              clase, precision, recall, f1))
+}
+```
+
+## 8.2 Importancia de variables
+
+```{r importancia_variables, fig.width=8, fig.height=5}
+importancia <- arbol_clasif$variable.importance
+cat("── Variables más importantes ──\n")
+print(round(sort(importancia, decreasing = TRUE), 2))
+
+par(mar = c(4, 14, 3, 2))
+barplot(rev(sort(importancia)),
+        horiz = TRUE, las = 1,
+        col = "#5B8DB8", border = "white",
+        xlab = "Importancia relativa",
+        main = "Importancia de variables — Árbol de Clasificación")
+```
+
+## 8.3 Distribución predicha vs real
+
+```{r plot_dist_predicha, fig.width=9, fig.height=4}
+par(mfrow = c(1, 2), mar = c(5, 4, 3, 2))
+
+barplot(prop.table(table(test_df$categoria_precio)) * 100,
+        col = c("#6DBF8E", "#5B8DB8", "#E05C5C"), border = "white",
+        ylim = c(0, 55), las = 2,
+        main = "Distribución real (test)", ylab = "% de registros")
+
+barplot(prop.table(table(pred_clasif)) * 100,
+        col = c("#6DBF8E", "#5B8DB8", "#E05C5C"), border = "white",
+        ylim = c(0, 55), las = 2,
+        main = "Distribución predicha (test)", ylab = "% de registros")
+par(mfrow = c(1, 1))
+```
+
+## 8.4 Interpretación
+
+El árbol de clasificación distingue las tres categorías de precio usando principalmente variables de **capacidad** (`accommodates`, `bedrooms`) y **tipo de habitación** (`room_type`), que son los predictores con mayor ganancia de información. Un listing se clasifica como **Cara** cuando tiene alta capacidad y corresponde a un apartamento o casa completa. Las propiedades **Económicas** tienden a ser habitaciones privadas con menor capacidad. La categoría **Intermedia** agrupa el rango intercuartílico, el más numeroso y más difícil de separar con precisión.
