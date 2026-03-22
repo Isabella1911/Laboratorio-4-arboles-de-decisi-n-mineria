@@ -24,10 +24,13 @@ library(lmtest)
 library(nortest)
 library(glmnet)
 library(corrplot)
+library(caret)
+library(rpart)
+library(rpart.plot)
 ```
 
 ```{r load_data}
-load("../../Data/Lab4/listings.RData")
+load("listings.RData")
 df <- listings
 
 cat("Número de filas:   ", nrow(listings), "\n")
@@ -1088,6 +1091,62 @@ barplot(prop.table(table(pred_clasif)) * 100,
 par(mfrow = c(1, 1))
 ```
 
-## 8.4 Interpretación
+## 8.4 Interpretación: El árbol de clasificación distingue las tres categorías de precio usando principalmente variables de **capacidad** (`accommodates`, `bedrooms`) y **tipo de habitación** (`room_type`), que son los predictores con mayor ganancia de información. Un listing se clasifica como **Cara** cuando tiene alta capacidad y corresponde a un apartamento o casa completa. Las propiedades **Económicas** tienden a ser habitaciones privadas con menor capacidad. La categoría **Intermedia** agrupa el rango intercuartílico, el más numeroso y más difícil de separar con precisión.
 
-El árbol de clasificación distingue las tres categorías de precio usando principalmente variables de **capacidad** (`accommodates`, `bedrooms`) y **tipo de habitación** (`room_type`), que son los predictores con mayor ganancia de información. Un listing se clasifica como **Cara** cuando tiene alta capacidad y corresponde a un apartamento o casa completa. Las propiedades **Económicas** tienden a ser habitaciones privadas con menor capacidad. La categoría **Intermedia** agrupa el rango intercuartílico, el más numeroso y más difícil de separar con precisión.
+## 8.5 Análisis detallado de errores
+
+```{r analisis_confusion}
+cat("── Totales por clase real ──\n")
+print(rowSums(conf_mat))
+
+cat("\n── Totales por clase predicha ──\n")
+print(colSums(conf_mat))
+
+cat("\n── Proporciones por fila ──\n")
+print(round(prop.table(conf_mat, 1), 3))
+```
+## 9. Análisis de eficiencia usando matriz de confusión
+cm_caret <- confusionMatrix(pred_clasif, test_df$categoria_precio)
+cm_caret
+
+## 10. Modelo con validación cruzada
+```{r modelo con validación cruzada}
+vars_clasif <- c("accommodates", "bedrooms", "bathrooms",
+                 "review_scores_rating", "reviews_per_month",
+                 "availability_365", "minimum_nights",
+                 "is_superhost", "is_instant_book",
+                 "host_response_rate_num",
+                 "high_rated", "high_availability",
+                 "beds_per_bedroom", "room_type")
+
+set.seed(42)
+
+control_cv <- trainControl(
+  method = "cv",
+  number = 5
+)
+
+modelo_cv <- train(
+  categoria_precio ~ .,
+  data = train_df[, c("categoria_precio", vars_clasif)],
+  method = "rpart",
+  trControl = control_cv,
+  tuneLength = 10
+)
+
+print(modelo_cv)
+plot(modelo_cv)
+
+pred_cv <- predict(modelo_cv, newdata = test_df)
+
+conf_mat_cv <- table(Real = test_df$categoria_precio, Predicho = pred_cv)
+cat("── Matriz de confusión (CV) ──\n")
+print(conf_mat_cv)
+
+accuracy_cv <- sum(diag(conf_mat_cv)) / sum(conf_mat_cv)
+cat("\nAccuracy con validación cruzada:", round(accuracy_cv * 100, 2), "%\n")
+
+cat("Accuracy árbol original: ", round(accuracy * 100, 2), "%\n")
+cat("Accuracy con validación cruzada: ", round(accuracy_cv * 100, 2), "%\n")
+
+```
