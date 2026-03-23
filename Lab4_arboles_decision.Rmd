@@ -24,13 +24,12 @@ library(lmtest)
 library(nortest)
 library(glmnet)
 library(corrplot)
-library(caret)
 library(rpart)
 library(rpart.plot)
 ```
 
 ```{r load_data}
-load("listings.RData")
+load("../../Data/Lab4/listings.RData")
 df <- listings
 
 cat("Número de filas:   ", nrow(listings), "\n")
@@ -1149,4 +1148,374 @@ cat("\nAccuracy con validación cruzada:", round(accuracy_cv * 100, 2), "%\n")
 cat("Accuracy árbol original: ", round(accuracy * 100, 2), "%\n")
 cat("Accuracy con validación cruzada: ", round(accuracy_cv * 100, 2), "%\n")
 
+```
+
+# Punto 11 — Árbol de clasificación con distintas profundidades
+
+Se comparan 6 profundidades distintas para el árbol de clasificación
+(variable respuesta: `categoria_precio`).
+Las profundidades evaluadas son: **2, 4, 6, 8, 12 y 15**.
+
+```{r vars_clasif_11}
+vars_clasif <- c("accommodates", "bedrooms", "bathrooms",
+                 "review_scores_rating", "reviews_per_month",
+                 "availability_365", "minimum_nights",
+                 "is_superhost", "is_instant_book",
+                 "host_response_rate_num",
+                 "high_rated", "high_availability",
+                 "beds_per_bedroom", "room_type")
+```
+
+```{r modelos_profundidad_clasif}
+profundidades_clasif <- c(2, 4, 6, 8, 12, 15)
+
+resultados_clasif <- data.frame(
+  Profundidad = character(),
+  Accuracy    = numeric(),
+  Nodos       = numeric(),
+  stringsAsFactors = FALSE
+)
+
+modelos_clasif_prof <- list()
+
+for (d in profundidades_clasif) {
+  set.seed(42)
+  modelo_d <- rpart(
+    categoria_precio ~ .,
+    data    = train_df[, c("categoria_precio", vars_clasif)],
+    method  = "class",
+    control = rpart.control(maxdepth = d, cp = 0.001)
+  )
+
+  pred_d   <- predict(modelo_d, newdata = test_df, type = "class")
+  cm_d     <- table(Real = test_df$categoria_precio, Predicho = pred_d)
+  acc_d    <- sum(diag(cm_d)) / sum(cm_d)
+
+  resultados_clasif <- rbind(resultados_clasif,
+    data.frame(
+      Profundidad = paste0("maxdepth = ", d),
+      Accuracy    = round(acc_d * 100, 2),
+      Nodos       = nrow(modelo_d$frame)
+    )
+  )
+
+  modelos_clasif_prof[[paste0("d", d)]] <- list(
+    modelo = modelo_d,
+    pred   = pred_d,
+    cm     = cm_d,
+    acc    = acc_d
+  )
+}
+
+# Incluir el árbol base del punto anterior (maxdepth = 6, cp = 0.001)
+# ya guardado como arbol_clasif
+pred_base_clasif <- predict(arbol_clasif, newdata = test_df, type = "class")
+cm_base_clasif   <- table(Real = test_df$categoria_precio,
+                           Predicho = pred_base_clasif)
+acc_base_clasif  <- sum(diag(cm_base_clasif)) / sum(cm_base_clasif)
+
+resultados_clasif <- rbind(
+  data.frame(
+    Profundidad = "Árbol base (maxdepth=6)",
+    Accuracy    = round(acc_base_clasif * 100, 2),
+    Nodos       = nrow(arbol_clasif$frame)
+  ),
+  resultados_clasif
+)
+
+cat("── Resultados por profundidad ──\n")
+print(resultados_clasif)
+```
+
+```{r plot_accuracy_prof, fig.width=9, fig.height=5}
+colores_p <- c("#A8C8E8", "#7EB3D8", "#5B8DB8", "#3A6E9E", "#2E6DA4",
+               "#1A4F8A", "#0D3566")
+
+par(mar = c(7, 5, 4, 2))
+bp_acc <- barplot(
+  resultados_clasif$Accuracy,
+  names.arg = resultados_clasif$Profundidad,
+  col    = colores_p,
+  border = "white",
+  ylim   = c(0, 100),
+  main   = "Accuracy por profundidad del árbol de clasificación (test)",
+  ylab   = "Accuracy (%)",
+  las    = 2,
+  cex.names = 0.72
+)
+text(bp_acc, resultados_clasif$Accuracy + 1.5,
+     labels = paste0(resultados_clasif$Accuracy, "%"),
+     cex = 0.85, font = 2)
+abline(h = 70, col = "#E05C5C", lwd = 2, lty = 2)
+legend("bottomright", legend = "Accuracy = 70%",
+       col = "#E05C5C", lty = 2, lwd = 2, bty = "n")
+```
+
+```{r nodos_vs_accuracy, fig.width=7, fig.height=5}
+plot(resultados_clasif$Nodos, resultados_clasif$Accuracy,
+     pch  = 19, cex = 1.5,
+     col  = "#5B8DB8",
+     main = "Complejidad (nodos) vs Accuracy",
+     xlab = "Número de nodos terminales",
+     ylab = "Accuracy (%)")
+text(resultados_clasif$Nodos, resultados_clasif$Accuracy + 0.5,
+     labels = resultados_clasif$Profundidad, cex = 0.65, pos = 3)
+lines(resultados_clasif$Nodos[order(resultados_clasif$Nodos)],
+      resultados_clasif$Accuracy[order(resultados_clasif$Nodos)],
+      col = "#5B8DB8", lwd = 1.5, lty = 2)
+```
+
+```{r matrices_confusion_prof, fig.width=14, fig.height=9}
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+for (d in profundidades_clasif) {
+  key <- paste0("d", d)
+  cm  <- modelos_clasif_prof[[key]]$cm
+  acc <- modelos_clasif_prof[[key]]$acc
+
+  cm_pct <- prop.table(cm, 1) * 100
+  image(t(cm_pct[nrow(cm_pct):1, ]),
+        col  = colorRampPalette(c("white", "#5B8DB8"))(20),
+        axes = FALSE,
+        main = paste0("maxdepth = ", d,
+                      "  |  Accuracy: ", round(acc * 100, 1), "%"))
+
+  axis(1, at = seq(0, 1, length.out = 3),
+       labels = colnames(cm), las = 2, cex.axis = 0.8)
+  axis(2, at = seq(0, 1, length.out = 3),
+       labels = rev(rownames(cm)), las = 1, cex.axis = 0.8)
+
+  for (i in 1:nrow(cm)) {
+    for (j in 1:ncol(cm)) {
+      text((j - 1) / (ncol(cm) - 1),
+           1 - (i - 1) / (nrow(cm) - 1),
+           labels = paste0(cm[i, j], "\n(",
+                           round(cm_pct[i, j], 1), "%)"),
+           cex = 0.75, font = 2,
+           col = ifelse(cm_pct[i, j] > 50, "white", "black"))
+    }
+  }
+}
+par(mfrow = c(1, 1))
+```
+
+```{r mejor_profundidad_clasif}
+mejor_clasif_idx  <- which.max(resultados_clasif$Accuracy)
+mejor_clasif_prof <- resultados_clasif$Profundidad[mejor_clasif_idx]
+
+cat("\n══ Mejor árbol de clasificación ══\n")
+cat("Profundidad:", mejor_clasif_prof, "\n")
+print(resultados_clasif[mejor_clasif_idx, ])
+```
+
+```{r random_forest_clasif}
+set.seed(42)
+rf_clasif <- randomForest(
+  categoria_precio ~ .,
+  data       = train_df[, c("categoria_precio", vars_clasif)],
+  ntree      = 500,
+  mtry       = floor(sqrt(length(vars_clasif))),   # ~4, regla estándar clasif.
+  importance = TRUE
+)
+```
+
+```{r metricas_rf_clasif}
+pred_rf_clasif <- predict(rf_clasif, newdata = test_df)
+
+cm_rf_clasif  <- table(Real = test_df$categoria_precio,
+                        Predicho = pred_rf_clasif)
+acc_rf_clasif <- sum(diag(cm_rf_clasif)) / sum(cm_rf_clasif)
+
+cat("── Matriz de confusión — Random Forest (clasificación) ──\n")
+print(cm_rf_clasif)
+cat("\nAccuracy:", round(acc_rf_clasif * 100, 2), "%\n")
+
+cat("\n── Métricas por clase ──\n")
+for (clase in levels(test_df$categoria_precio)) {
+  tp <- cm_rf_clasif[clase, clase]
+  fp <- sum(cm_rf_clasif[, clase]) - tp
+  fn <- sum(cm_rf_clasif[clase, ]) - tp
+
+  precision <- if ((tp + fp) > 0) tp / (tp + fp) else 0
+  recall    <- if ((tp + fn) > 0) tp / (tp + fn) else 0
+  f1        <- if ((precision + recall) > 0)
+                 2 * precision * recall / (precision + recall) else 0
+
+  cat(sprintf("  %s — Precision: %.3f | Recall: %.3f | F1: %.3f\n",
+              clase, precision, recall, f1))
+}
+```
+
+## 12.3 Importancia de variables en Random Forest
+
+```{r importancia_rf, fig.width=9, fig.height=5}
+set.seed(42)
+rf_reg <- randomForest(
+  price ~ .,
+  data       = train_df[, c("price", vars_arbol)],
+  ntree      = 500,
+  mtry       = floor(length(vars_arbol) / 3),   # regresión: p/3
+  importance = TRUE
+)
+
+print(rf_reg)
+
+# Predicción y métricas en test
+pred_rf_reg    <- predict(rf_reg, newdata = test_df)
+rmse_rf_reg    <- sqrt(mean((test_df$price - pred_rf_reg)^2))
+mae_rf_reg     <- mean(abs(test_df$price - pred_rf_reg))
+r2_rf_reg      <- cor(test_df$price, pred_rf_reg)^2
+
+cat("\n── Métricas Random Forest Regresión (test) ──\n")
+cat("RMSE:", round(rmse_rf_reg, 2), "\n")
+cat("MAE: ", round(mae_rf_reg,  2), "\n")
+cat("R²:  ", round(r2_rf_reg,   4), "\n")
+
+# Error OOB a lo largo de los árboles
+plot(rf_reg,
+     main = "Error OOB vs Número de árboles — RF Regresión",
+     col  = "#5B8DB8", lwd = 2)
+
+# Importancia de variables (regresión)
+varImpPlot(rf_reg,
+           main = "Importancia de variables — RF Regresión",
+           col  = "#5B8DB8", pch = 16)
+
+# Predicho vs Real
+par(mar = c(4, 4, 3, 2))
+plot(test_df$price, pred_rf_reg,
+     pch  = 16, col = rgb(0.36, 0.54, 0.72, 0.2),
+     main = "Predicho vs Real — Random Forest Regresión",
+     xlab = "Precio real (USD)", ylab = "Precio predicho (USD)",
+     xlim = c(0, 800), ylim = c(0, 800))
+abline(0, 1, col = "#E05C5C", lwd = 2, lty = 2)
+legend("topleft",
+       legend = paste0("R² = ", round(r2_rf_reg, 4)),
+       col = "#E05C5C", lty = 2, lwd = 2, bty = "n")
+
+# ── 12.2 Comparación RF Regresión vs Árboles de decisión ──
+
+mejor_arbol_rmse <- min(resultados_prof$RMSE)
+mejor_arbol_mae  <- resultados_prof$MAE[which.min(resultados_prof$RMSE)]
+mejor_arbol_r2   <- resultados_prof$R2[which.min(resultados_prof$RMSE)]
+
+comparacion_reg <- data.frame(
+  Modelo = c("Árbol — Sin límite (base)",
+             "Árbol — maxdepth = 3",
+             "Árbol — maxdepth = 5",
+             "Árbol — maxdepth = 7",
+             "Árbol — maxdepth = 10",
+             "Random Forest (500 árboles)"),
+  RMSE = round(c(resultados_prof$RMSE, rmse_rf_reg), 2),
+  MAE  = round(c(resultados_prof$MAE,  mae_rf_reg),  2),
+  R2   = round(c(resultados_prof$R2,   r2_rf_reg),   4)
+)
+
+cat("\n══ Comparación Árboles de Regresión vs Random Forest ══\n")
+print(comparacion_reg)
+
+colores_comp_reg <- c("#A8C8E8", "#5B8DB8", "#2E6DA4", "#1A4F8A",
+                      "#E8A838", "#E05C5C")
+par(mar = c(9, 5, 4, 2))
+bp_cr <- barplot(
+  comparacion_reg$RMSE,
+  names.arg = comparacion_reg$Modelo,
+  col = colores_comp_reg, border = "white",
+  ylim = c(0, max(comparacion_reg$RMSE) * 1.2),
+  main = "RMSE — Árboles de Regresión vs Random Forest",
+  ylab = "RMSE (USD)", las = 2, cex.names = 0.65
+)
+text(bp_cr, comparacion_reg$RMSE + 1,
+     labels = comparacion_reg$RMSE, cex = 0.8, font = 2)
+
+
+# ── 12.3 Random Forest para CLASIFICACIÓN ──────────────────
+
+set.seed(42)
+rf_clasif <- randomForest(
+  categoria_precio ~ .,
+  data       = train_df[, c("categoria_precio", vars_clasif)],
+  ntree      = 500,
+  mtry       = floor(sqrt(length(vars_clasif))),  # clasificación: sqrt(p)
+  importance = TRUE
+)
+
+print(rf_clasif)
+
+# Predicción y métricas en test
+pred_rf_clasif <- predict(rf_clasif, newdata = test_df)
+cm_rf          <- table(Real = test_df$categoria_precio, Predicho = pred_rf_clasif)
+acc_rf         <- sum(diag(cm_rf)) / sum(cm_rf)
+
+cat("\n── Matriz de confusión — RF Clasificación ──\n")
+print(cm_rf)
+cat("\nAccuracy RF Clasificación:", round(acc_rf * 100, 2), "%\n")
+
+cat("\n── Métricas por clase — RF Clasificación ──\n")
+for (clase in levels(test_df$categoria_precio)) {
+  cat(sprintf("  %s — Precision: %.3f | Recall: %.3f | F1: %.3f\n",
+              clase,
+              calcular_f1(cm_rf, clase),
+              { tp <- cm_rf[clase,clase]; fn <- sum(cm_rf[clase,])-tp
+                if ((tp+fn)>0) tp/(tp+fn) else 0 },
+              calcular_f1(cm_rf, clase)))
+}
+
+# Error OOB por clase
+plot(rf_clasif,
+     main   = "Error OOB vs Número de árboles — RF Clasificación",
+     lwd    = 2,
+     col    = c("black", "#6DBF8E", "#5B8DB8", "#E05C5C"))
+legend("topright",
+       legend = c("OOB general", "Económica", "Intermedia", "Cara"),
+       col    = c("black", "#6DBF8E", "#5B8DB8", "#E05C5C"),
+       lty = 1, lwd = 2, bty = "n")
+
+# Importancia de variables (clasificación)
+varImpPlot(rf_clasif,
+           main = "Importancia de variables — RF Clasificación",
+           col  = "#5B8DB8", pch = 16)
+
+# Distribución predicha vs real
+par(mfrow = c(1, 2), mar = c(5, 4, 3, 2))
+barplot(prop.table(table(test_df$categoria_precio)) * 100,
+        col = c("#6DBF8E", "#5B8DB8", "#E05C5C"), border = "white",
+        ylim = c(0, 55), las = 2,
+        main = "Distribución real (test)", ylab = "% de registros")
+barplot(prop.table(table(pred_rf_clasif)) * 100,
+        col = c("#6DBF8E", "#5B8DB8", "#E05C5C"), border = "white",
+        ylim = c(0, 55), las = 2,
+        main = "Distribución predicha — RF", ylab = "% de registros")
+par(mfrow = c(1, 1))
+
+# ── 12.4 Comparación final: Árbol vs Random Forest (Clasificación) ──
+
+comparacion_clasif <- data.frame(
+  Modelo      = c(resultados_clasif_prof$Profundidad,
+                  "Random Forest (500 árboles)"),
+  Accuracy    = c(resultados_clasif_prof$Accuracy,
+                  round(acc_rf * 100, 2)),
+  F1_Eco      = c(resultados_clasif_prof$F1_Eco,
+                  round(calcular_f1(cm_rf, "Economica"),  3)),
+  F1_Int      = c(resultados_clasif_prof$F1_Int,
+                  round(calcular_f1(cm_rf, "Intermedia"), 3)),
+  F1_Cara     = c(resultados_clasif_prof$F1_Cara,
+                  round(calcular_f1(cm_rf, "Cara"),       3))
+)
+
+cat("\n══ Comparación final: Árboles de Clasificación vs Random Forest ══\n")
+print(comparacion_clasif)
+
+colores_comp_clasif <- c("#A8C8E8", "#5B8DB8", "#6DBF8E", "#E8A838", "#E05C5C")
+par(mar = c(8, 5, 4, 2))
+bp_cf <- barplot(
+  comparacion_clasif$Accuracy,
+  names.arg = comparacion_clasif$Modelo,
+  col = colores_comp_clasif, border = "white",
+  ylim = c(0, 100),
+  main = "Accuracy — Árboles de Clasificación vs Random Forest",
+  ylab = "Accuracy (%)", las = 2, cex.names = 0.7
+)
+text(bp_cf, comparacion_clasif$Accuracy + 1.5,
+     labels = paste0(comparacion_clasif$Accuracy, "%"),
+     cex = 0.8, font = 2)
 ```
